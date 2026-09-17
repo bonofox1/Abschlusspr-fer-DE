@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
       - run: python -m compileall -q common services tests
       - run: python -m unittest discover -s tests -v
+      - run: cp .env.example .env
       - run: docker compose config
       - run: docker build -f services/getmyinvoices/Dockerfile -t getmyinvoices-mcp:test .
       - run: docker build -f services/lexware/Dockerfile -t lexware-office-mcp:test .
-
