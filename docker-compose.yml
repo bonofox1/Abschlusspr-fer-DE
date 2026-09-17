@@ -1,0 +1,37 @@
+services:
+  getmyinvoices-mcp:
+    build:
+      context: .
+      dockerfile: services/getmyinvoices/Dockerfile
+    env_file: .env
+    environment:
+      MCP_SERVER_AUTH: ${GMI_MCP_SERVER_AUTH}
+      PORT: 8080
+    ports:
+      - "8081:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  lexware-office-mcp:
+    build:
+      context: .
+      dockerfile: services/lexware/Dockerfile
+    env_file: .env
+    environment:
+      MCP_SERVER_AUTH: ${LEXWARE_MCP_SERVER_AUTH}
+      PORT: 8080
+    ports:
+      - "8082:8080"
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
