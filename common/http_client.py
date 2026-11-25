@@ -6,14 +6,55 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urljoin
-from urllib.request import Request, urlopen
+from urllib.parse import urlencode, urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from uuid import uuid4
 
 from .errors import ServiceError
 
 
 UrlOpen = Callable[..., object]
+
+# Header names (lower case) that carry provider credentials and must never be sent
+# to a different origin.
+CREDENTIAL_HEADERS = frozenset({"authorization", "x-api-key"})
+
+
+def _origin(url: str) -> tuple[str, str, int | None]:
+    parts = urlsplit(url)
+    port = parts.port or {"https": 443, "http": 80}.get(parts.scheme)
+    return parts.scheme.lower(), (parts.hostname or "").lower(), port
+
+
+class CredentialSafeRedirectHandler(HTTPRedirectHandler):
+    """Follows redirects without leaking provider credentials.
+
+    urllib's default handler copies every request header, including
+    Authorization, to whatever host the redirect points at. This handler
+    refuses redirects away from HTTPS and strips credential headers whenever
+    the redirect leaves the original origin (e.g. a pre-signed storage URL).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        new_req = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new_req is None:
+            return None
+        old_origin = _origin(req.full_url)
+        new_origin = _origin(new_req.full_url)
+        if new_origin[0] != "https" and old_origin[0] == "https":
+            raise HTTPError(req.full_url, code, "Refusing redirect away from HTTPS", headers, fp)
+        if new_origin != old_origin:
+            for name in list(new_req.headers):
+                if name.lower() in CREDENTIAL_HEADERS:
+                    del new_req.headers[name]
+        return new_req
+
+
+_safe_opener = build_opener(CredentialSafeRedirectHandler)
+
+
+def safe_urlopen(request: Request, timeout: float):
+    return _safe_opener.open(request, timeout=timeout)
 
 
 @dataclass(slots=True)
@@ -24,7 +65,7 @@ class ProviderHttpClient:
     auth_header: str = "Authorization"
     auth_scheme: str = "Bearer"
     max_attempts: int = 3
-    opener: UrlOpen = urlopen
+    opener: UrlOpen = safe_urlopen
 
     def _url(self, path: str, query: dict[str, object] | None = None) -> str:
         if not path.startswith("/") or path.startswith("//"):

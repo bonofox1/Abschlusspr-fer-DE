@@ -1,41 +1,68 @@
+# Each service receives only its own provider credentials. Values are interpolated
+# from the local .env file, which compose reads automatically; the file itself is
+# deliberately NOT passed to the containers via env_file.
+
+x-shared-env: &shared-env
+  MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-localhost,127.0.0.1}
+  REQUEST_TIMEOUT_SECONDS: ${REQUEST_TIMEOUT_SECONDS:-20}
+  MAX_PAGE_SIZE: ${MAX_PAGE_SIZE:-250}
+  MAX_DOWNLOAD_BYTES: ${MAX_DOWNLOAD_BYTES:-20971520}
+  MAX_DATE_RANGE_DAYS: ${MAX_DATE_RANGE_DAYS:-366}
+  DOWNLOAD_TTL_SECONDS: ${DOWNLOAD_TTL_SECONDS:-900}
+  LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  # Optional OAuth login for claude.ai connectors (shared password, per-service signing key).
+  OAUTH_LOGIN_PASSWORD: ${OAUTH_LOGIN_PASSWORD:-}
+  OAUTH_EXTRA_REDIRECT_PREFIXES: ${OAUTH_EXTRA_REDIRECT_PREFIXES:-}
+  PORT: 8080
+
+x-hardening: &hardening
+  read_only: true
+  # The services run as uid/gid 10001, so the tmpfs must belong to that user.
+  tmpfs:
+    - /tmp:size=32m,mode=0700,uid=10001,gid=10001
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+
 services:
   getmyinvoices-mcp:
+    <<: *hardening
     build:
       context: .
       dockerfile: services/getmyinvoices/Dockerfile
-    env_file: .env
     environment:
-      MCP_SERVER_AUTH: ${GMI_MCP_SERVER_AUTH}
+      <<: *shared-env
+      MCP_SERVER_AUTH: ${GMI_MCP_SERVER_AUTH:?GMI_MCP_SERVER_AUTH is required}
       MCP_PUBLIC_BASE_URL: ${GMI_PUBLIC_BASE_URL:-}
       OAUTH_SIGNING_KEY: ${GMI_OAUTH_SIGNING_KEY:-}
-      PORT: 8080
+      GMI_API_BASE_URL: ${GMI_API_BASE_URL}
+      GMI_API_TOKEN: ${GMI_API_TOKEN}
+      GMI_AUTH_HEADER: ${GMI_AUTH_HEADER:-Authorization}
+      GMI_AUTH_SCHEME: ${GMI_AUTH_SCHEME-Bearer}
+      GMI_ACCOUNT_SCOPE: ${GMI_ACCOUNT_SCOPE}
+      GMI_ACCOUNT_SCOPE_PARAM: ${GMI_ACCOUNT_SCOPE_PARAM}
+      GMI_LIST_PATH: ${GMI_LIST_PATH}
+      GMI_DETAIL_PATH_TEMPLATE: ${GMI_DETAIL_PATH_TEMPLATE}
+      GMI_DOWNLOAD_PATH_TEMPLATE: ${GMI_DOWNLOAD_PATH_TEMPLATE}
+      GMI_TYPES_PATH: ${GMI_TYPES_PATH:-}
+      GMI_LIST_PARAM_MAP_JSON: ${GMI_LIST_PARAM_MAP_JSON}
     ports:
-      - "8081:8080"
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1700
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
+      # Bound to the loopback interface only; publish via an HTTPS reverse proxy.
+      - "127.0.0.1:8081:8080"
 
   lexware-office-mcp:
+    <<: *hardening
     build:
       context: .
       dockerfile: services/lexware/Dockerfile
-    env_file: .env
     environment:
-      MCP_SERVER_AUTH: ${LEXWARE_MCP_SERVER_AUTH}
+      <<: *shared-env
+      MCP_SERVER_AUTH: ${LEXWARE_MCP_SERVER_AUTH:?LEXWARE_MCP_SERVER_AUTH is required}
       MCP_PUBLIC_BASE_URL: ${LEXWARE_PUBLIC_BASE_URL:-}
       OAUTH_SIGNING_KEY: ${LEXWARE_OAUTH_SIGNING_KEY:-}
-      PORT: 8080
+      LEXWARE_API_BASE_URL: ${LEXWARE_API_BASE_URL:-https://api.lexware.io}
+      LEXWARE_API_TOKEN: ${LEXWARE_API_TOKEN}
+      LEXWARE_ORGANIZATION_SCOPE: ${LEXWARE_ORGANIZATION_SCOPE}
     ports:
-      - "8082:8080"
-    read_only: true
-    tmpfs:
-      - /tmp:size=32m,mode=1700
-    security_opt:
-      - no-new-privileges:true
-    cap_drop:
-      - ALL
-
+      - "127.0.0.1:8082:8080"
