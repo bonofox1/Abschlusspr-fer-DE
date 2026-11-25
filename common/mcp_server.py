@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import hmac
+import html
 import json
 import logging
 import os
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
+from urllib.parse import parse_qs, urlencode
 
 from .config import RuntimeConfig
 from .downloads import DownloadStore
 from .errors import ServiceError
+from .oauth import OAuthError, OAuthServer
 
 
 Handler = Callable[[dict[str, object]], dict[str, object] | list[object]]
@@ -87,14 +90,108 @@ class McpApplication:
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
-def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None) -> None:
+def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None, oauth: OAuthServer | None = None) -> None:
+    oauth = oauth or OAuthServer.from_env(app.name)
+    if oauth:
+        logging.info("oauth enabled issuer=%s", oauth.base_url)
+
     class RequestHandler(BaseHTTPRequestHandler):
         server_version = "MCPReadOnly/1.0"
 
         def _authorized(self) -> bool:
             supplied = self.headers.get("Authorization", "")
             expected = f"Bearer {app.config.inbound_token}"
-            return hmac.compare_digest(supplied, expected)
+            if hmac.compare_digest(supplied, expected):
+                return True
+            return bool(oauth and supplied.startswith("Bearer ") and oauth.valid_access_token(supplied[7:].strip()))
+
+        def _unauthorized(self) -> None:
+            encoded = b'{"error":"unauthorized"}'
+            self.send_response(401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            if oauth:
+                self.send_header("WWW-Authenticate", oauth.www_authenticate())
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def _html(self, status: int, page: str) -> None:
+            encoded = page.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def _read_body(self, limit: int = 64 * 1024) -> bytes | None:
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+            except ValueError:
+                return None
+            if length < 0 or length > limit:
+                return None
+            return self.rfile.read(length)
+
+        def _form(self) -> dict[str, str]:
+            raw = self._read_body() or b""
+            return {k: v[0] for k, v in parse_qs(raw.decode("utf-8", "replace")).items()}
+
+        def _oauth_get(self) -> bool:
+            if not oauth:
+                return False
+            path, _, query = self.path.partition("?")
+            if path.startswith("/.well-known/oauth-protected-resource"):
+                self._json(200, oauth.protected_resource_metadata())
+            elif path.startswith("/.well-known/oauth-authorization-server"):
+                self._json(200, oauth.authorization_server_metadata())
+            elif path == "/authorize":
+                try:
+                    self._html(200, oauth.login_page(query))
+                except OAuthError as exc:
+                    self._html(exc.status, f"<!doctype html><p>{html.escape(exc.description)}</p>")
+            else:
+                return False
+            return True
+
+        def _oauth_post(self) -> bool:
+            if not oauth:
+                return False
+            try:
+                if self.path == "/register":
+                    raw = self._read_body()
+                    try:
+                        body = json.loads(raw or b"")
+                    except (ValueError, UnicodeDecodeError):
+                        raise OAuthError("invalid_client_metadata", "JSON expected")
+                    self._json(201, oauth.register(body))
+                elif self.path == "/token":
+                    self._json(200, oauth.token(self._form()))
+                elif self.path == "/authorize":
+                    form = self._form()
+                    try:
+                        target = oauth.authorize(form)
+                    except OAuthError as exc:
+                        if exc.error != "access_denied":
+                            raise
+                        query = urlencode({k: v for k, v in form.items() if k != "password"})
+                        self._html(exc.status, oauth.login_page(query, exc.description))
+                        return True
+                    logging.info("oauth authorization granted")
+                    self.send_response(302)
+                    self.send_header("Location", target)
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                else:
+                    return False
+            except OAuthError as exc:
+                if self.path == "/authorize":
+                    self._html(exc.status, f"<!doctype html><p>{html.escape(exc.description)}</p>")
+                else:
+                    self._json(exc.status, exc.body())
+            return True
 
         def _valid_host(self) -> bool:
             host_name = self.headers.get("Host", "").split(":", 1)[0].lower()
@@ -114,12 +211,14 @@ def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None) -
             self.wfile.write(encoded)
 
         def do_GET(self) -> None:
+            if self._oauth_get():
+                return
             if self.path == "/healthz":
                 self._json(200, {"status": "ok", "service": app.name})
                 return
             if self.path.startswith("/downloads/") and app.downloads:
                 if not self._authorized():
-                    self._json(401, {"error": "unauthorized"})
+                    self._unauthorized()
                     return
                 reference = self.path.removeprefix("/downloads/")
                 item = app.downloads.get(reference)
@@ -139,6 +238,8 @@ def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None) -
             self._json(404, {"error": "not_found"})
 
         def do_POST(self) -> None:
+            if self._oauth_post():
+                return
             if self.path != "/mcp":
                 self._json(404, {"error": "not_found"})
                 return
@@ -146,7 +247,7 @@ def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None) -
                 self._json(403, {"error": "invalid_host"})
                 return
             if not self._authorized():
-                self._json(401, {"error": "unauthorized"})
+                self._unauthorized()
                 return
             try:
                 length = int(self.headers.get("Content-Length", "0"))

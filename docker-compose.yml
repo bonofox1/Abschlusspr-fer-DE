@@ -6,6 +6,8 @@ services:
     env_file: .env
     environment:
       MCP_SERVER_AUTH: ${GMI_MCP_SERVER_AUTH}
+      MCP_PUBLIC_BASE_URL: ${GMI_PUBLIC_BASE_URL:-}
+      OAUTH_SIGNING_KEY: ${GMI_OAUTH_SIGNING_KEY:-}
       PORT: 8080
     ports:
       - "8081:8080"
@@ -24,6 +26,8 @@ services:
     env_file: .env
     environment:
       MCP_SERVER_AUTH: ${LEXWARE_MCP_SERVER_AUTH}
+      MCP_PUBLIC_BASE_URL: ${LEXWARE_PUBLIC_BASE_URL:-}
+      OAUTH_SIGNING_KEY: ${LEXWARE_OAUTH_SIGNING_KEY:-}
       PORT: 8080
     ports:
       - "8082:8080"

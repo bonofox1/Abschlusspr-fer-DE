@@ -46,6 +46,16 @@ The MCP endpoints are available at `http://localhost:8081/mcp` and `http://local
 
 The `/downloads/{reference}` route uses the same Bearer token as its MCP service. References expire after `DOWNLOAD_TTL_SECONDS`; provider documents remain unchanged.
 
+## Use as a claude.ai connector (OAuth)
+
+claude.ai custom connectors cannot send a fixed `Authorization` header, so each service can act as its own minimal OAuth 2.1 authorization server for one owner:
+
+1. Publish the service under HTTPS (for example a Cloudflare Tunnel to `localhost:8082`).
+2. Set `MCP_PUBLIC_BASE_URL` (e.g. `https://lexware-mcp.example.de`), a random `OAUTH_SIGNING_KEY` (32+ characters) and `OAUTH_LOGIN_PASSWORD` (12+ characters). Add the hostname to `MCP_ALLOWED_HOSTS`.
+3. In claude.ai, add a custom connector with the URL `https://<host>/mcp`. Claude registers itself, opens a password page on the service, and receives tokens after the correct password.
+
+Details: dynamic client registration accepts only Claude callback URLs, PKCE S256 is mandatory, codes are single-use and valid for 5 minutes, access tokens for 1 hour, refresh tokens for 30 days. Client IDs and tokens are HMAC-signed and stateless, so restarts do not log Claude out; changing `OAUTH_SIGNING_KEY` revokes all of them. Five wrong passwords lock the page for 15 minutes. The static `MCP_SERVER_AUTH` token keeps working for local tests.
+
 ## Test
 
 ```bash
