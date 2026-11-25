@@ -29,6 +29,20 @@ class ProviderTests(unittest.TestCase):
             provider._assert_scope({"organizationId": "org-b"}, required_field=True)
         self.assertEqual(caught.exception.error_code, "ORGANIZATION_SCOPE_VIOLATION")
 
+    def test_lexware_first_scope_check_always_calls_profile(self) -> None:
+        class FakeHttp:
+            calls = 0
+
+            def get_json(self, path: str, query: object = None) -> object:
+                FakeHttp.calls += 1
+                return {"organizationId": "org-b"}
+
+        runtime = RuntimeConfig("secret", 5, 1024, 25, 31, 60, frozenset())
+        provider = LexwareProvider(runtime, FakeHttp(), "org-a", None, None)  # type: ignore[arg-type]
+        with self.assertRaises(ServiceError):
+            provider.health_check({})
+        self.assertEqual(FakeHttp.calls, 1)
+
     def test_identifier_allows_uuid_and_rejects_slash(self) -> None:
         self.assertEqual(identifier("aa93e8a8-2aa3-470b-b914-caad8a255dd8", "id"), "aa93e8a8-2aa3-470b-b914-caad8a255dd8")
         with self.assertRaises(ServiceError):
