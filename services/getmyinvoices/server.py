@@ -21,7 +21,7 @@ def build_application() -> McpApplication:
         Tool("gmi_list_documents", "Lists and normalizes documents in a bounded date range. This tool never changes provider data.", OBJECT | {"properties": {"date_from": {"type": "string", "format": "date"}, "date_to": {"type": "string", "format": "date"}, "document_type": {"type": "string"}, "status": {"type": "string"}, "supplier": {"type": "string"}, "page_size": {"type": "integer", "minimum": 1}, "cursor": {"type": "string"}}, "required": ["date_from", "date_to"]}, provider.list_documents),
         Tool("gmi_get_document_metadata", "Returns normalized metadata for one document in the configured account scope.", OBJECT | {"properties": {"document_id": {"type": "string"}}, "required": ["document_id"]}, provider.get_metadata),
         Tool("gmi_download_document", "Downloads one allow-listed document variant into short-lived protected server storage and returns an opaque reference.", OBJECT | {"properties": {"document_id": {"type": "string"}, "variant": {"type": "string"}}, "required": ["document_id"]}, provider.download_document),
-        Tool("gmi_list_document_types", "Returns provider document types when the documented endpoint has been configured.", OBJECT | {"properties": {}}, provider.list_document_types),
+        Tool("gmi_list_document_types", "Returns the GetMyInvoices document types usable as filter (static list, the API has no endpoint for it).", OBJECT | {"properties": {}}, provider.list_document_types),
     ]
     return McpApplication("getmyinvoices-readonly", "1.0.0", runtime, tools, downloads)
 
