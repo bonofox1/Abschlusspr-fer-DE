@@ -35,13 +35,30 @@ def _mk_year(path: Path) -> None:
     conn.close()
 
 
+def _mk_accounts(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    conn.execute("CREATE TABLE __mapping (ver TEXT, vtable TEXT, cid INTEGER, name TEXT, type TEXT, preset TEXT, rtable TEXT, rname TEXT, roff INT)")
+    fields = [(1, "lNr", "int32", "bh_konto", "col0", -1), (2, "szName", "char(40)", "bh_konto", "col1", -1),
+              (3, "bGesperrt", "int16", "bh_konto", "col2", -1), (4, "fDatevAutomatik", "int16", "bh_konto", "col3", -1),
+              (5, "lNr_Datev", "int32", "bh_konto", "col4", -1)]
+    conn.executemany("INSERT INTO __mapping VALUES ('1','bh_konto_vtemp',?,?,?,NULL,?,?,?)", fields)
+    conn.execute("CREATE TABLE bh_konto (col0 INT, col1 TEXT, col2 INT, col3 INT, col4 INT)")
+    conn.executemany("INSERT INTO bh_konto VALUES (?,?,?,?,?)", [
+        (1200, "Bank", 0, 0, 1200), (4210, "Miete", 0, 0, 4210), (8400, "Erlöse 19 % USt\x00\x00", 0, 1, 8400),
+        (1000, "Kasse", 1, 0, 1000), (4185, "Sonder", 0, 0, 1590)])
+    conn.commit()
+    conn.close()
+
+
 class LexwareDesktopTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         base = Path(self.tmp.name)
         (base / "00000002" / "2025").mkdir(parents=True)
         _mk_year(base / "00000002" / "2025" / "BHStdYear.dbs")
-        self.reader = LexwareDesktopReader(base)
+        _mk_accounts(base / "00000002" / "BHStdAccountList.dbs")
+        self.export = base / "export"
+        self.reader = LexwareDesktopReader(base, export_dir=self.export)
 
     def tearDown(self) -> None:
         self.tmp.cleanup()
@@ -88,6 +105,68 @@ class LexwareDesktopTests(unittest.TestCase):
         before = path.stat().st_mtime_ns
         self.reader.journal({"company_id": 2, "year": 2025})
         self.assertEqual(before, path.stat().st_mtime_ns)
+
+
+    def test_text_columns_are_cut_at_nul(self) -> None:
+        names = {a["account"]: a["name"] for a in self.reader.accounts({"company_id": 2})["accounts"]}
+        self.assertEqual(names[8400], "Erlöse 19 % USt")
+
+
+class DatevImportTests(LexwareDesktopTests):
+    GOOD = {"date": "2025-03-15", "amount": 119.0, "debit_account": 1200, "credit_account": 8400,
+            "text": "Rechnung 17 Müller", "document_number": "RE-17"}
+
+    def test_preview_does_not_write(self) -> None:
+        out = self.reader.create_datev_import({"company_id": 2, "year": 2025, "bookings": [self.GOOD]})
+        self.assertTrue(out["valid"], out["errors"])
+        self.assertFalse(out["written"])
+        self.assertTrue(out["preview"][0]["automatic_tax"])
+        self.assertFalse(self.export.exists())
+
+    def test_writes_extf_file(self) -> None:
+        lexware = Path(self.tmp.name) / "00000002" / "2025" / "BHStdYear.dbs"
+        before = lexware.stat().st_mtime_ns
+        out = self.reader.create_datev_import({"company_id": 2, "year": 2025, "confirm": True, "label": "Test",
+                                               "bookings": [self.GOOD, {**self.GOOD, "amount": 50.5, "debit_account": 4210,
+                                                                        "credit_account": 1200, "bu_key": "9", "text": 'Miete "März"'}]})
+        self.assertTrue(out["written"], out)
+        raw = Path(out["file"]).read_bytes()
+        lines = raw.decode("cp1252").split("\r\n")
+        header = lines[0].split(";")
+        self.assertEqual(header[:5], ['"EXTF"', "700", "21", '"Buchungsstapel"', "13"])
+        self.assertEqual(len(header), 31)
+        self.assertEqual(header[12:16], ["20250101", "4", "20250315", "20250315"])
+        self.assertEqual(len(lines[1].split(";")), 125)
+        row = lines[2].split(";")
+        self.assertEqual(len(row), 125)
+        self.assertEqual(row[:10], ["119,00", '"S"', '"EUR"', "", "", "", "1200", "8400", "", "1503"])
+        self.assertEqual((row[10], row[13]), ('"RE-17"', '"Rechnung 17 Müller"'))
+        row2 = lines[3].split(";")
+        self.assertEqual((row2[0], row2[6], row2[7], row2[8], row2[13]), ("50,50", "4210", "1200", '"9"', '"Miete ""März"""'))
+        self.assertEqual(lines[-1], "")
+        self.assertEqual(before, lexware.stat().st_mtime_ns)
+
+    def test_rejects_invalid_bookings_without_writing(self) -> None:
+        bad = [
+            {**self.GOOD, "date": "2024-12-31"},
+            {**self.GOOD, "debit_account": 9999},
+            {**self.GOOD, "debit_account": 1000},
+            {**self.GOOD, "debit_account": 4185},
+            {**self.GOOD, "bu_key": "3"},
+            {**self.GOOD, "amount": -5},
+            {**self.GOOD, "amount": 1.234},
+            {**self.GOOD, "document_number": "RE 17"},
+            {**self.GOOD, "text": "x" * 61},
+            {**self.GOOD, "credit_account": 1200},
+            {**self.GOOD, "foo": 1},
+        ]
+        out = self.reader.create_datev_import({"company_id": 2, "year": 2025, "confirm": True, "bookings": bad})
+        self.assertFalse(out["valid"])
+        self.assertFalse(out["written"])
+        self.assertEqual(len(out["errors"]), len(bad), out["errors"])
+        self.assertFalse(self.export.exists())
+        with self.assertRaises(ServiceError):
+            self.reader.create_datev_import({"company_id": 2, "year": 2024, "bookings": [self.GOOD]})
 
 
 if __name__ == "__main__":

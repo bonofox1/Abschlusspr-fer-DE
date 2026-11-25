@@ -6,7 +6,9 @@ each file describes every field (name, type, source column, byte offset).
 This module decodes records generically from that mapping, so it follows the
 layout of the installed Lexware version instead of hard-coding offsets.
 
-Files are always opened with ``mode=ro``. Nothing is ever written.
+Files are always opened with ``mode=ro``. Nothing is ever written to them.
+The only write path is ``create_datev_import``: it writes a DATEV CSV file
+into a separate export folder for the Lexware DATEV import.
 """
 from __future__ import annotations
 
@@ -17,13 +19,17 @@ import struct
 import threading
 from contextlib import closing
 from dataclasses import dataclass, field
-from datetime import date
+import hashlib
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
 from common.errors import ServiceError, validation_error
+from . import datev
 
 DEFAULT_DATA_DIR = r"C:\ProgramData\Lexware\buchhalter\Daten"
+DEFAULT_EXPORT_DIR = str(Path.home() / "Documents" / "Claude-DATEV-Import")
 COMPANY_DIR = re.compile(r"^\d{8}$")
 YEAR_DIR = re.compile(r"^\d{4}$")
 TABLE_NAME = re.compile(r"^[A-Za-z0-9_]{1,64}$")
@@ -72,7 +78,7 @@ class FieldSpec:
         if isinstance(value, float):
             return round(value, 6)
         if isinstance(value, str):
-            return value.strip()
+            return value.split("\x00", 1)[0].strip()
         return value
 
 
@@ -141,6 +147,7 @@ def load_mapping(conn: sqlite3.Connection) -> dict[str, TableSpec]:
 class LexwareDesktopReader:
     data_dir: Path
     max_rows: int = MAX_ROWS
+    export_dir: Path | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @classmethod
@@ -148,7 +155,7 @@ class LexwareDesktopReader:
         path = Path(os.getenv("LXBH_DATA_DIR", DEFAULT_DATA_DIR))
         if not path.is_dir():
             raise RuntimeError(f"LXBH_DATA_DIR not found: {path}")
-        return cls(path)
+        return cls(path, export_dir=Path(os.getenv("LXBH_EXPORT_DIR", DEFAULT_EXPORT_DIR)))
 
     # --- paths ----------------------------------------------------------
     def _company_dir(self, company_id: object) -> Path:
@@ -336,6 +343,67 @@ class LexwareDesktopReader:
         result.sort(key=lambda x: x["account"] or 0)
         return {"balances": result, "count": len(result), "currency": "EUR",
                 "note": "monthly[0] ist die Eroeffnung bzw. Periode 0, monthly[1..12] die Monate. Vorzeichen wie in Lexware gespeichert."}
+
+    # --- DATEV import file (the only write path) ------------------------
+    def create_datev_import(self, args: dict[str, object]) -> dict[str, object]:
+        company = self._company_dir(args.get("company_id"))
+        company_id = int(company.name)
+        year_raw = args.get("year")
+        if not isinstance(year_raw, int) or not 1990 <= year_raw <= 2100:
+            raise validation_error("year must be a four-digit year")
+        year = year_raw
+        self._file(company_id, year, "year")  # the fiscal year must exist in Lexware
+        start = date(year, 1, 1)
+        if args.get("fiscal_year_start"):
+            try:
+                start = date.fromisoformat(str(args["fiscal_year_start"]))
+            except ValueError as exc:
+                raise validation_error("fiscal_year_start must be YYYY-MM-DD") from exc
+        end = date.fromordinal(date(start.year + 1, start.month, start.day).toordinal() - 1)
+        advisor = args.get("advisor_number", 1001)
+        client = args.get("client_number", 1)
+        if not isinstance(advisor, int) or not 1001 <= advisor <= 9999999:
+            raise validation_error("advisor_number must be 1001..9999999")
+        if not isinstance(client, int) or not 1 <= client <= 99999:
+            raise validation_error("client_number must be 1..99999")
+        label = str(args.get("label") or f"Claude {datetime.now():%Y-%m-%d}").strip()[:30]
+        rows, _ = self._rows(self._file(company_id, None, "accounts"), "bh_konto", limit=self.max_rows * 5)
+        accounts = {int(r["lNr"]): datev.Account(int(r["lNr"]), r.get("szName"), bool(r.get("bGesperrt")),
+                                                 bool(r.get("fDatevAutomatik")), r.get("lNr_Datev"))
+                    for r in rows if isinstance(r.get("lNr"), int)}
+        bookings, errors, warnings = datev.parse_bookings(args.get("bookings"), year, accounts, start, end)
+        result: dict[str, object] = {"company_id": company_id, "year": year, "valid": not errors,
+                                     "errors": errors, "warnings": warnings, "written": False}
+        if errors:
+            return result
+        total = sum((b.amount for b in bookings), Decimal("0"))
+        result["preview"] = [{"date": b.booking_date.isoformat(), "amount": f"{b.amount:.2f}",
+                              "debit_account": b.debit, "debit_name": accounts[b.debit].name,
+                              "credit_account": b.credit, "credit_name": accounts[b.credit].name,
+                              "text": b.text, "document_number": b.document_number, "bu_key": b.bu_key or None,
+                              "automatic_tax": accounts[b.debit].automatic or accounts[b.credit].automatic}
+                             for b in bookings[:50]]
+        result["count"] = len(bookings)
+        result["total_amount"] = f"{total:.2f}"
+        if args.get("confirm") is not True:
+            result["note"] = "Nur geprüft, noch keine Datei geschrieben. Mit confirm=true wird die DATEV-Datei erzeugt."
+            return result
+        if self.export_dir is None:
+            raise ServiceError("NOT_CONFIGURED", "LXBH_EXPORT_DIR is not set")
+        content = datev.build_file(bookings, advisor=advisor, client=client, fiscal_start=start,
+                                   account_length=4, label=label, created=datetime.now())
+        folder = self.export_dir / f"{company_id:08d}"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"EXTF_Buchungsstapel_{year}_{datetime.now():%Y%m%d_%H%M%S_%f}.csv"
+        with open(path, "xb") as handle:
+            handle.write(content)
+        result.update({"written": True, "file": str(path), "bytes": len(content),
+                       "sha256": hashlib.sha256(content).hexdigest(),
+                       "next_steps": ("In Lexware: Firma und Wirtschaftsjahr öffnen, Datei > Import > DATEV-Import, "
+                                      "Ordner " + str(folder) + " wählen, Datei anhaken. Die Buchungen erscheinen unter "
+                                      "Ansicht > Import Buchungsdaten; erst dort prüfen und in den Stapel buchen. "
+                                      "Vorher eine Datensicherung anlegen.")})
+        return result
 
 
 def _matches(actual: object, expected: object) -> bool:

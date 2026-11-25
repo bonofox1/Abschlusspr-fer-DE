@@ -13,7 +13,7 @@ No create, update, delete, upload, booking, finalization or submission tool is r
 
 - Provider credentials are read from environment variables and never returned by tools.
 - Each MCP endpoint requires `Authorization: Bearer <MCP_SERVER_AUTH>`.
-- GetMyInvoices requests always include the fixed server-side account scope configured by `GMI_ACCOUNT_SCOPE` and `GMI_ACCOUNT_SCOPE_PARAM`.
+- GetMyInvoices binds the account to the API key. Before the first data access the service calls `GET /account` and refuses to work unless `accountId` equals `GMI_ACCOUNT_SCOPE` and `apiKeyType` is `READ_ONLY`.
 - Lexware validates `LEXWARE_ORGANIZATION_SCOPE` against `GET /v1/profile` and rejects mismatching resource responses.
 - IDs cannot contain path separators; date ranges and page sizes are bounded.
 - Provider calls use timeouts and bounded retries for `429` and transient `5xx` responses.
@@ -27,7 +27,17 @@ No create, update, delete, upload, booking, finalization or submission tool is r
 
 Copy `.env.example` to a local `.env` and replace every placeholder. Do not commit `.env`.
 
-GetMyInvoices endpoint paths are deliberately configuration values. The official v3 documentation page did not expose its endpoint definitions in a machine-readable form during implementation, and the project specification prohibits guessing provider paths or authentication details. Set `GMI_LIST_PATH`, `GMI_DETAIL_PATH_TEMPLATE`, `GMI_DOWNLOAD_PATH_TEMPLATE`, `GMI_ACCOUNT_SCOPE_PARAM` and `GMI_LIST_PARAM_MAP_JSON` from the current documentation and contract for the connected account. The service fails closed when required mappings are absent.
+GetMyInvoices uses the Accounts API v3 (`https://api.getmyinvoices.com/accounts/v3`, header `X-API-KEY`, GET only):
+
+| Tool | Endpoint |
+|---|---|
+| `gmi_health_check` | `GET /account` (account id and READ_ONLY key type) |
+| `gmi_list_documents` | `GET /documents` with `startDateFilter`, `endDateFilter`, `perPage`, `pageNumber`, `documentTypeFilter[]`, `paymentStatusFilter`, `companyFilter` |
+| `gmi_get_document_metadata` | `GET /documents/{documentUid}` |
+| `gmi_download_document` | `GET /documents/{documentUid}`, file taken from the JSON field `fileContent` |
+| `gmi_list_document_types` | static `documentTypeFilter` enum (no provider endpoint) |
+
+Still **unconfirmed** against the official documentation (the published spec could only be read through a mirror): the query parameter that switches the file content of a single document on or off (`GMI_DETAIL_QUERY_JSON` / `GMI_DOWNLOAD_QUERY_JSON`), the base64 encoding of `fileContent`, and the field names for amounts, dates and supplier in document records. Responses carry `field_mapping_verified: false` until this is checked with a real account.
 
 Lexware defaults to `https://api.lexware.io` and uses Bearer authentication. The implementation relies only on GET operations documented as of 2026-09-17:
 
@@ -60,7 +70,7 @@ $env:MCP_SERVER_AUTH = '<long random token>'
 python -m services.lexware_buchhalter.server
 ```
 
-Tools: `lxbh_list_companies`, `lxbh_list_accounts`, `lxbh_list_bookings` (journal and/or Stapel, date and account filter), `lxbh_account_balances`, `lxbh_list_tables`, `lxbh_read_table`. Writing (bookings into the Stapel) is intentionally not implemented: the official local "Lexware API Service" needs a client key issued by Lexware, and the alternative is a DATEV CSV import done in Lexware itself.
+Tools: `lxbh_list_companies`, `lxbh_list_accounts`, `lxbh_list_bookings` (journal and/or Stapel, date and account filter), `lxbh_account_balances`, `lxbh_list_tables`, `lxbh_read_table`. The service never writes into the Lexware database. For new bookings, `lxbh_create_datev_import` validates them against the chart of accounts (existing, not locked, no BU key on automatic tax accounts, date inside the fiscal year, DATEV character set) and returns a preview; only with `confirm: true` it writes a DATEV-Format file (EXTF 700, Buchungsstapel, format version 13, Windows-1252) into `LXBH_EXPORT_DIR\<company>`. The user imports that file in Lexware (Datei > Import > DATEV-Import); the bookings then wait under "Import Buchungsdaten" until they are checked and booked into the Stapel. The official local "Lexware API Service" would allow direct bookings but needs a client key issued by Lexware.
 
 ## Use as a claude.ai connector (OAuth)
 

@@ -39,8 +39,34 @@ def build_application() -> McpApplication:
         Tool("lxbh_read_table", "Liest eine beliebige Lexware-Tabelle aus lxbh_list_tables dekodiert. Ohne year: Kontenplan-Datei, mit year: Jahresdatei. where filtert exakt bzw. bei Text per Teilstring.",
              schema(COMPANY | YEAR | PAGING | {"table": {"type": "string"}, "where": {"type": "object"}}, ["company_id", "table"]),
              reader.read_table),
+        Tool("lxbh_create_datev_import",
+             "Erzeugt eine DATEV-Importdatei (Buchungsstapel, EXTF) fuer Lexware. Schreibt NIE in die Lexware-Datenbank. "
+             "Ohne confirm=true wird nur geprueft und eine Vorschau geliefert. Betraege sind Bruttobetraege; auf Automatikkonten "
+             "rechnet Lexware die Steuer selbst, dann keinen bu_key angeben. Die Datei importiert der Nutzer in Lexware "
+             "(Datei > Import > DATEV-Import) und bucht sie dort nach Pruefung in den Stapel.",
+             schema(COMPANY | YEAR | {
+                 "bookings": {"type": "array", "minItems": 1, "maxItems": 1000, "items": {
+                     "type": "object", "additionalProperties": False,
+                     "required": ["date", "amount", "debit_account", "credit_account", "text"],
+                     "properties": {
+                         "date": {"type": "string", "format": "date", "description": "Belegdatum"},
+                         "amount": {"type": "number", "exclusiveMinimum": 0, "description": "Bruttobetrag in EUR"},
+                         "debit_account": {"type": "integer", "description": "Sollkonto"},
+                         "credit_account": {"type": "integer", "description": "Habenkonto"},
+                         "text": {"type": "string", "maxLength": 60},
+                         "document_number": {"type": "string", "maxLength": 20, "description": "Belegnummer (A-Z, 0-9, $&%*+-/)"},
+                         "bu_key": {"type": "string", "description": "DATEV-BU-Schluessel, nur fuer Konten ohne Automatik"},
+                         "cost_centre_1": {"type": "string"}, "cost_centre_2": {"type": "string"},
+                         "service_date": {"type": "string", "format": "date", "description": "Leistungsdatum"}}}},
+                 "label": {"type": "string", "maxLength": 30, "description": "Bezeichnung des Stapels"},
+                 "advisor_number": {"type": "integer", "minimum": 1001, "maximum": 9999999, "description": "DATEV-Beraternummer der Firma in Lexware"},
+                 "client_number": {"type": "integer", "minimum": 1, "maximum": 99999, "description": "DATEV-Mandantennummer der Firma in Lexware"},
+                 "fiscal_year_start": {"type": "string", "format": "date"},
+                 "confirm": {"type": "boolean", "description": "true schreibt die Datei, sonst nur Pruefung"}},
+                 ["company_id", "year", "bookings"]),
+             reader.create_datev_import),
     ]
-    app = McpApplication("lexware-buchhaltung-readonly", "0.1.0", runtime, tools)
+    app = McpApplication("lexware-buchhaltung", "0.2.0", runtime, tools)
     return app
 
 
