@@ -5,6 +5,8 @@ This repository contains two separate Docker services:
 - `getmyinvoices-mcp` exposes read-only document discovery, metadata and protected downloads.
 - `lexware-office-mcp` exposes documented read-only organization, voucher, contact, invoice, credit-note and recurring-template operations.
 
+- `lexware_buchhalter` (no Docker, runs on the Windows PC with Lexware buchhaltung desktop) reads the local Lexware SQLite files read-only: companies, chart of accounts, journal, Buchungsstapel, balances and any mapped table.
+
 No create, update, delete, upload, booking, finalization or submission tool is registered. Provider requests use `GET` exclusively.
 
 ## Security model
@@ -45,6 +47,18 @@ docker compose up --build
 The MCP endpoints are available at `http://localhost:8081/mcp` and `http://localhost:8082/mcp`. Liveness endpoints are `/healthz`. In production, publish both services behind separate HTTPS endpoints, set `MCP_ALLOWED_HOSTS` to their public hostnames and set `MCP_PUBLIC_BASE_URL` per service if protected download URLs should be returned.
 
 The `/downloads/{reference}` route uses the same Bearer token as its MCP service. References expire after `DOWNLOAD_TTL_SECONDS`; provider documents remain unchanged.
+
+## Lexware buchhaltung desktop (on-premise)
+
+Lexware buchhaltung (plus) 2027 keeps each company in `C:\ProgramData\Lexware\buchhalter\Daten\0000000N\` as SQLite files: `BHStdAccountList.dbs` (chart of accounts) and `YYYY\BHStdYear.dbs` per fiscal year. Most fields are packed into BLOB columns; the service decodes them generically from Lexware's own `__mapping` table, and TEXT columns from cp1252. Files are opened with `mode=ro` and `PRAGMA query_only`, so the service cannot write.
+
+```powershell
+$env:LXBH_DATA_DIR = 'C:\ProgramData\Lexware\buchhalter\Daten'   # default
+$env:MCP_SERVER_AUTH = '<long random token>'
+python -m services.lexware_buchhalter.server
+```
+
+Tools: `lxbh_list_companies`, `lxbh_list_accounts`, `lxbh_list_bookings` (journal and/or Stapel, date and account filter), `lxbh_account_balances`, `lxbh_list_tables`, `lxbh_read_table`. Writing (bookings into the Stapel) is intentionally not implemented: the official local "Lexware API Service" needs a client key issued by Lexware, and the alternative is a DATEV CSV import done in Lexware itself.
 
 ## Use as a claude.ai connector (OAuth)
 
