@@ -44,7 +44,7 @@ The official payments API documents lookup by one voucher ID, not a date-filtere
 docker compose up --build
 ```
 
-The MCP endpoints are available at `http://localhost:8081/mcp` and `http://localhost:8082/mcp`; the ports are bound to `127.0.0.1` only. Liveness endpoints are `/healthz`. In production, publish both services behind separate HTTPS endpoints, set `MCP_ALLOWED_HOSTS` to their public hostnames and set `GMI_MCP_PUBLIC_BASE_URL` / `LEXWARE_MCP_PUBLIC_BASE_URL` if protected download URLs should be returned.
+The MCP endpoints are available at `http://localhost:8081/mcp` and `http://localhost:8082/mcp`; the ports are bound to `127.0.0.1` only. Liveness endpoints are `/healthz`. In production, publish both services behind separate HTTPS endpoints, set `MCP_ALLOWED_HOSTS` to their public hostnames and set `GMI_PUBLIC_BASE_URL` / `LEXWARE_PUBLIC_BASE_URL` if protected download URLs should be returned.
 
 The `/downloads/{reference}` route uses the same Bearer token as its MCP service. References expire after `DOWNLOAD_TTL_SECONDS`; provider documents remain unchanged.
 
