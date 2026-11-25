@@ -95,6 +95,29 @@ class DownloadStore:
             self._items[reference] = item
         return item
 
+    def save_bytes(self, data: bytes, file_name: str, mime_type: str) -> StoredDownload:
+        """Stores an in-memory file (e.g. a base64 payload from a JSON API)."""
+        mime = mime_type.lower()
+        if mime not in ALLOWED_MIME_TYPES:
+            raise ServiceError("UNSUPPORTED_FILE_TYPE", "Provider returned an unsupported file type")
+        if len(data) > self.max_bytes:
+            raise ServiceError("DOWNLOAD_TOO_LARGE", "Download exceeds the configured size limit")
+        name = re.sub(r"[^A-Za-z0-9._-]", "_", os.path.basename(file_name))[:160] or "document"
+        reference = uuid4().hex
+        target = self.directory / reference
+        try:
+            with target.open("xb") as handle:
+                os.chmod(target, 0o600)
+                handle.write(data)
+        except Exception:
+            target.unlink(missing_ok=True)
+            raise
+        item = StoredDownload(reference, target, name, mime, len(data), hashlib.sha256(data).hexdigest(), time.time() + self.ttl_seconds)
+        with self._lock:
+            self._cleanup_locked()
+            self._items[reference] = item
+        return item
+
     def get(self, reference: str) -> StoredDownload | None:
         with self._lock:
             self._cleanup_locked()
