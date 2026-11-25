@@ -5,6 +5,8 @@ This repository contains two separate Docker services:
 - `getmyinvoices-mcp` exposes read-only document discovery, metadata and protected downloads.
 - `lexware-office-mcp` exposes documented read-only organization, voucher, contact, invoice, credit-note and recurring-template operations.
 
+- `lexware_buchhalter` (no Docker, runs on the Windows PC with Lexware buchhaltung desktop) reads the local Lexware SQLite files read-only: companies, chart of accounts, journal, Buchungsstapel, balances and any mapped table.
+
 No create, update, delete, upload, booking, finalization or submission tool is registered. Provider requests use `GET` exclusively.
 
 ## Security model
@@ -57,6 +59,28 @@ docker compose up --build
 The MCP endpoints are available at `http://localhost:8081/mcp` and `http://localhost:8082/mcp`; the ports are bound to `127.0.0.1` only. Liveness endpoints are `/healthz`. In production, publish both services behind separate HTTPS endpoints, set `MCP_ALLOWED_HOSTS` to their public hostnames and set `GMI_PUBLIC_BASE_URL` / `LEXWARE_PUBLIC_BASE_URL` if protected download URLs should be returned.
 
 The `/downloads/{reference}` route uses the same Bearer token as its MCP service. References expire after `DOWNLOAD_TTL_SECONDS`; provider documents remain unchanged.
+
+## Lexware buchhaltung desktop (on-premise)
+
+Lexware buchhaltung (plus) 2027 keeps each company in `C:\ProgramData\Lexware\buchhalter\Daten\0000000N\` as SQLite files: `BHStdAccountList.dbs` (chart of accounts) and `YYYY\BHStdYear.dbs` per fiscal year. Most fields are packed into BLOB columns; the service decodes them generically from Lexware's own `__mapping` table, and TEXT columns from cp1252. Files are opened with `mode=ro` and `PRAGMA query_only`, so the service cannot write.
+
+```powershell
+$env:LXBH_DATA_DIR = 'C:\ProgramData\Lexware\buchhalter\Daten'   # default
+$env:MCP_SERVER_AUTH = '<long random token>'
+python -m services.lexware_buchhalter.server
+```
+
+Tools: `lxbh_list_companies`, `lxbh_list_accounts`, `lxbh_list_bookings` (journal and/or Stapel, date and account filter), `lxbh_account_balances`, `lxbh_list_tables`, `lxbh_read_table`. The service never writes into the Lexware database. For new bookings, `lxbh_create_datev_import` validates them against the chart of accounts (existing, not locked, no BU key on automatic tax accounts, date inside the fiscal year, DATEV character set) and returns a preview; only with `confirm: true` it writes a DATEV-Format file (EXTF 700, Buchungsstapel, format version 13, Windows-1252) into `LXBH_EXPORT_DIR\<company>`. The user imports that file in Lexware (Datei > Import > DATEV-Import); the bookings then wait under "Import Buchungsdaten" until they are checked and booked into the Stapel. The official local "Lexware API Service" would allow direct bookings but needs a client key issued by Lexware.
+
+## Use as a claude.ai connector (OAuth)
+
+claude.ai custom connectors cannot send a fixed `Authorization` header, so each service can act as its own minimal OAuth 2.1 authorization server for one owner:
+
+1. Publish the service under HTTPS (for example a Cloudflare Tunnel to `localhost:8082`).
+2. Set `MCP_PUBLIC_BASE_URL` (e.g. `https://lexware-mcp.example.de`), a random `OAUTH_SIGNING_KEY` (32+ characters) and `OAUTH_LOGIN_PASSWORD` (12+ characters). Add the hostname to `MCP_ALLOWED_HOSTS`.
+3. In claude.ai, add a custom connector with the URL `https://<host>/mcp`. Claude registers itself, opens a password page on the service, and receives tokens after the correct password.
+
+Details: dynamic client registration accepts only Claude callback URLs, PKCE S256 is mandatory, codes are single-use and valid for 5 minutes, access tokens for 1 hour, refresh tokens for 30 days. Client IDs and tokens are HMAC-signed and stateless, so restarts do not log Claude out; changing `OAUTH_SIGNING_KEY` revokes all of them. Five wrong passwords lock the page for 15 minutes. The static `MCP_SERVER_AUTH` token keeps working for local tests.
 
 ## Test
 

@@ -100,7 +100,7 @@ class LexwareProvider:
     organization_scope: str
     downloads: DownloadStore
     public_base_url: str | None
-    _scope_checked_at: float = field(default=0.0)
+    _scope_checked_at: float | None = field(default=None)
 
     @classmethod
     def from_env(cls, runtime: RuntimeConfig, downloads: DownloadStore) -> "LexwareProvider":
@@ -121,7 +121,7 @@ class LexwareProvider:
                 raise ServiceError("ORGANIZATION_SCOPE_VIOLATION", "Lexware response did not identify its organization")
 
     def _ensure_scope(self) -> dict[str, object]:
-        if time.monotonic() - self._scope_checked_at < 300:
+        if self._scope_checked_at is not None and time.monotonic() - self._scope_checked_at < 300:
             return {"organizationId": self.organization_scope}
         raw = self.http.get_json("/v1/profile")
         self._assert_scope(raw, required_field=True)
