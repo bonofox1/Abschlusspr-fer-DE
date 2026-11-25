@@ -15,6 +15,8 @@ No create, update, delete, upload, booking, finalization or submission tool is r
 - Lexware validates `LEXWARE_ORGANIZATION_SCOPE` against `GET /v1/profile` and rejects mismatching resource responses.
 - IDs cannot contain path separators; date ranges and page sizes are bounded.
 - Provider calls use timeouts and bounded retries for `429` and transient `5xx` responses.
+- Redirects never leave HTTPS, and credential headers (`Authorization`, `X-API-Key`) are stripped when a redirect leaves the provider origin.
+- Each container receives only its own provider token; `.env` is used for compose interpolation, not passed wholesale via `env_file`.
 - Downloads accept only PDF, XML, JPEG and PNG, enforce a streaming byte limit, use mode `0600`, receive a SHA-256 checksum and expire from temporary storage.
 - Docker containers run as an unprivileged user with a read-only root filesystem, all Linux capabilities dropped and only a small tmpfs for ephemeral downloads.
 - Logs contain status information only. Tokens, query strings, response bodies and document data are not logged.
@@ -42,7 +44,7 @@ The official payments API documents lookup by one voucher ID, not a date-filtere
 docker compose up --build
 ```
 
-The MCP endpoints are available at `http://localhost:8081/mcp` and `http://localhost:8082/mcp`. Liveness endpoints are `/healthz`. In production, publish both services behind separate HTTPS endpoints, set `MCP_ALLOWED_HOSTS` to their public hostnames and set `MCP_PUBLIC_BASE_URL` per service if protected download URLs should be returned.
+The MCP endpoints are available at `http://localhost:8081/mcp` and `http://localhost:8082/mcp`; the ports are bound to `127.0.0.1` only. Liveness endpoints are `/healthz`. In production, publish both services behind separate HTTPS endpoints, set `MCP_ALLOWED_HOSTS` to their public hostnames and set `GMI_MCP_PUBLIC_BASE_URL` / `LEXWARE_MCP_PUBLIC_BASE_URL` if protected download URLs should be returned.
 
 The `/downloads/{reference}` route uses the same Bearer token as its MCP service. References expire after `DOWNLOAD_TTL_SECONDS`; provider documents remain unchanged.
 
