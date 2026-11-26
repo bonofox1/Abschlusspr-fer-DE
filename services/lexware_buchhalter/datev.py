@@ -90,9 +90,18 @@ def _date(value: object, name: str, errors: list[str], prefix: str) -> date | No
         return None
 
 
+PERSONAL_MIN, PERSONAL_MAX = 10000, 99999  # Debitoren/Kreditoren bei Sachkontenlänge 4
+
+
 def parse_bookings(raw: object, year: int, accounts: dict[int, Account],
-                   fiscal_start: date, fiscal_end: date) -> tuple[list[Booking], list[str], list[str]]:
-    """Validate the requested bookings. Returns (bookings, errors, warnings)."""
+                   fiscal_start: date, fiscal_end: date,
+                   known_personal: frozenset[int] = frozenset()) -> tuple[list[Booking], list[str], list[str]]:
+    """Validate the requested bookings. Returns (bookings, errors, warnings).
+
+    Personal accounts (Debitoren 10000-69999, Kreditoren 70000-99999) are not in
+    the chart of accounts file. They are accepted; unless the account already has
+    a balance in the fiscal year, a warning says Lexware will check it on import.
+    """
     errors: list[str] = []
     warnings: list[str] = []
     if not isinstance(raw, list) or not raw:
@@ -131,8 +140,13 @@ def parse_bookings(raw: object, year: int, accounts: dict[int, Account],
                 numbers.append(0)
                 continue
             acc = accounts.get(value)
-            if acc is None:
-                errors.append(p + f"Konto {value} gibt es im Kontenplan nicht (Personenkonten werden noch nicht unterstützt)")
+            if acc is None and PERSONAL_MIN <= value <= PERSONAL_MAX:
+                if value not in known_personal:
+                    kind = "Debitor" if value < 70000 else "Kreditor"
+                    warnings.append(p + f"Personenkonto {value} ({kind}) ist im Jahr noch nicht bebucht; "
+                                        "Lexware prüft beim Import, ob es angelegt ist")
+            elif acc is None:
+                errors.append(p + f"Konto {value} gibt es im Kontenplan nicht")
             elif acc.locked:
                 errors.append(p + f"Konto {value} ist gesperrt")
             elif acc.datev_number not in (None, 0, value):
