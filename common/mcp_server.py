@@ -8,7 +8,7 @@ import os
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from .config import RuntimeConfig
 from .downloads import DownloadStore
@@ -90,6 +90,18 @@ class McpApplication:
         return {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
 
 
+def _login_csp(oauth: OAuthServer | None) -> str:
+    """CSP for the login page. Browsers apply form-action to the redirect that
+    follows the form post, so the Claude callback origins must be allowed."""
+    origins = ["'self'"]
+    for prefix in (oauth.redirect_prefixes if oauth else ()):
+        parsed = urlparse(prefix)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin not in origins:
+            origins.append(origin)
+    return "default-src 'none'; style-src 'unsafe-inline'; form-action " + " ".join(origins)
+
+
 def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None, oauth: OAuthServer | None = None) -> None:
     oauth = oauth or OAuthServer.from_env(app.name)
     if oauth:
@@ -122,7 +134,7 @@ def serve(app: McpApplication, host: str = "0.0.0.0", port: int | None = None, o
             self.send_header("Content-Length", str(len(encoded)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Frame-Options", "DENY")
-            self.send_header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'")
+            self.send_header("Content-Security-Policy", _login_csp(oauth))
             self.end_headers()
             self.wfile.write(encoded)
 
