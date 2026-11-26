@@ -371,17 +371,22 @@ class LexwareDesktopReader:
         accounts = {int(r["lNr"]): datev.Account(int(r["lNr"]), r.get("szName"), bool(r.get("bGesperrt")),
                                                  bool(r.get("fDatevAutomatik")), r.get("lNr_Datev"))
                     for r in rows if isinstance(r.get("lNr"), int)}
-        bookings, errors, warnings = datev.parse_bookings(args.get("bookings"), year, accounts, start, end)
+        try:
+            personal_rows, _ = self._rows(self._file(company_id, year, "year"), "bh_soll4", limit=self.max_rows * 5)
+        except ServiceError:
+            personal_rows = []
+        known_personal = frozenset(int(r["lNr"]) for r in personal_rows if isinstance(r.get("lNr"), int))
+        bookings, errors, warnings = datev.parse_bookings(args.get("bookings"), year, accounts, start, end, known_personal)
         result: dict[str, object] = {"company_id": company_id, "year": year, "valid": not errors,
                                      "errors": errors, "warnings": warnings, "written": False}
         if errors:
             return result
         total = sum((b.amount for b in bookings), Decimal("0"))
         result["preview"] = [{"date": b.booking_date.isoformat(), "amount": f"{b.amount:.2f}",
-                              "debit_account": b.debit, "debit_name": accounts[b.debit].name,
-                              "credit_account": b.credit, "credit_name": accounts[b.credit].name,
+                              "debit_account": b.debit, "debit_name": _name(accounts, b.debit),
+                              "credit_account": b.credit, "credit_name": _name(accounts, b.credit),
                               "text": b.text, "document_number": b.document_number, "bu_key": b.bu_key or None,
-                              "automatic_tax": accounts[b.debit].automatic or accounts[b.credit].automatic}
+                              "automatic_tax": any(n in accounts and accounts[n].automatic for n in (b.debit, b.credit))}
                              for b in bookings[:50]]
         result["count"] = len(bookings)
         result["total_amount"] = f"{total:.2f}"
@@ -404,6 +409,12 @@ class LexwareDesktopReader:
                                       "Ansicht > Import Buchungsdaten; erst dort prüfen und in den Stapel buchen. "
                                       "Vorher eine Datensicherung anlegen.")})
         return result
+
+
+def _name(accounts: dict[int, "datev.Account"], number: int) -> str | None:
+    if number in accounts:
+        return accounts[number].name
+    return "Personenkonto (Debitor)" if number < 70000 else "Personenkonto (Kreditor)"
 
 
 def _matches(actual: object, expected: object) -> bool:

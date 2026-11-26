@@ -146,10 +146,19 @@ class DatevImportTests(LexwareDesktopTests):
         self.assertEqual(lines[-1], "")
         self.assertEqual(before, lexware.stat().st_mtime_ns)
 
+    def test_personal_accounts_are_accepted_with_warning(self) -> None:
+        out = self.reader.create_datev_import({"company_id": 2, "year": 2025, "bookings": [
+            {**self.GOOD, "debit_account": 10001}, {**self.GOOD, "debit_account": 4210, "credit_account": 70001}]})
+        self.assertTrue(out["valid"], out["errors"])
+        self.assertEqual(len(out["warnings"]), 2)
+        self.assertIn("Debitor", out["warnings"][0])
+        self.assertEqual(out["preview"][1]["credit_name"], "Personenkonto (Kreditor)")
+
     def test_rejects_invalid_bookings_without_writing(self) -> None:
         bad = [
             {**self.GOOD, "date": "2024-12-31"},
             {**self.GOOD, "debit_account": 9999},
+            {**self.GOOD, "debit_account": 100000},
             {**self.GOOD, "debit_account": 1000},
             {**self.GOOD, "debit_account": 4185},
             {**self.GOOD, "bu_key": "3"},
