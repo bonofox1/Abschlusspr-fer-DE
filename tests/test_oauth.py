@@ -119,9 +119,13 @@ class OAuthHttpTests(unittest.TestCase):
         verifier, challenge = pkce()
         params = {"client_id": client_id, "redirect_uri": CALLBACK, "response_type": "code",
                   "code_challenge": challenge, "code_challenge_method": "S256", "state": "s1"}
-        status, _, page = request("GET", "/authorize?" + urlencode(params))
+        status, headers, page = request("GET", "/authorize?" + urlencode(params))
         self.assertEqual(status, 200)
         self.assertIn(b"type=password", page)
+        # Browsers apply form-action to the redirect after the post; the callback origin must be allowed.
+        form_action = headers["Content-Security-Policy"].split("form-action", 1)[1].split(";")[0].split()
+        self.assertEqual(form_action, ["'self'", "https://claude.ai", "https://claude.com"])
+        self.assertIn(urlparse(CALLBACK).scheme + "://" + urlparse(CALLBACK).netloc, form_action)
         form = urlencode(params | {"password": "correct horse battery"}).encode()
         status, headers, _ = request("POST", "/authorize", form, {"Content-Type": "application/x-www-form-urlencoded"})
         self.assertEqual(status, 302)
